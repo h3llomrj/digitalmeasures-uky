@@ -2,7 +2,7 @@
 
 This is a submodule of the [Digital Measures](https://www.drupal.org/project/digitalmeasures) API.
 
-## Intructions
+## Instructions
 
 1. Download, install, and activate [digitalmeasures](https://www.drupal.org/project/digitalmeasures), this module, and the [field_collection](https://www.drupal.org/project/field_collection) module.
 2. Visit the modules configuration page, admin/config/services/digitalmeasures. Enter your Digital Measures service account username, password.
