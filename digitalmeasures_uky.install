@@ -1,0 +1,418 @@
+<?php
+
+/*
+ ********************************************************
+ ***                                                  ***
+ ***  Created by Matt Johnson -- matt.johnson@uky.edu ***
+ ***                                                  ***
+ ********************************************************
+ */
+
+
+/**
+ * Implements hook_enable().
+ */
+function digitalmeasures_uky_enable() {
+	drupal_set_message($message = t('DM UKY was successfully enabled. Be sure to turn off the Taxonomy links. (Taxonomy->Faculty->Edit)'), $type = 'status');
+}
+
+
+/**
+ * Implements hook_install().
+ */
+function digitalmeasures_uky_install() {
+
+	/*
+	// create department taxonomy vocabulary
+	$new_vocab = (object) array(
+		'name' => 'Department',
+		'description' => 'College Departments',
+		'machine_name' => 'department',
+	);
+	taxonomy_vocabulary_save($new_vocab);
+
+	// Create Department Field
+	$field = array(
+		'field_name' => 'field_department',
+		'type' => 'taxonomy_term_reference',
+		'label' => 'Department',
+		'cardinality' => -1,
+		'settings' => array(
+			'allowed_values' => array(
+				array(
+					'vocabulary' => 'department',
+					'parent' => 0
+				)
+			)
+		)
+	);
+	field_create_field($field);
+	*/
+
+	// create faculty taxonomy vocabulary
+	$new_vocab = (object) array(
+		'name' => 'Faculty',
+		'description' => 'Faculty Members',
+		'machine_name' => 'faculty',
+	);
+	taxonomy_vocabulary_save($new_vocab);
+	variable_set('pathauto_taxonomy_term_faculty_pattern', 'faculty-research/faculty/[term:field-dm-lname]-[term:field-dm-fname]');
+
+	// Define Faculty fields
+	$dm_fields = array(
+		'field_dm_prefix' => array(
+			'label'=>'Prefix',
+			'description'=>'Dr., Ms., Mr., etc.'),
+		'field_dm_fname' => array(
+			'label'=>'First Name',
+			'description'=>'Faculty First Name'),
+		'field_dm_pfname' => array(
+			'label'=>'Perfered Name',
+			'description'=>'Faculty Perfered Name'),
+		'field_dm_mname' => array(
+			'label'=>'Middle Name',
+			'description'=>'Faculty Middle Name'),
+		'field_dm_lname' => array(
+			'label'=>'Last Name',
+			'description'=>'Faculty Last Name'),
+		'field_dm_credabbr' => array(
+			'label'=>'Credential Abbreviation(s)',
+			'description'=>'Faculty Credential Abbreviation(s)'),
+		'field_dm_ptitles' => array(
+			'label'=>'Title(s)',
+			'description'=>'Faculty Title(s)'),
+		'field_dm_email' => array(
+			'label'=>'Email Address',
+			'description'=>'Faculty email address'),
+		'field_dm_phone' => array(
+			'label'=>'Phone Number',
+			'description'=>'Faculty Phone Number'),
+		'field_dm_pref_uk_addr1' => array(
+			'label'=>'UK Address',
+			'description'=>'UKY Office #'),
+		'field_dm_website' => array(
+			'label'=>'Personal Website',
+			'description'=>'Website URL'),
+		'field_dm_cv' => array(
+			'label'=>'CV',
+			'description'=>'Uploaded PDF CV '),
+		'field_dm_cv_link' => array(
+			'label'=>'CV Link',
+			'description'=>'CV Link '),
+		'field_dm_education' => array(
+			'label'=>'Education Information',
+			'description'=>'Faculty Degree, School, Year'),
+		'field_dm_interests' => array(
+			'label'=>'Interests',
+			'description'=>'Interests')
+	);
+
+	foreach ($dm_fields as $obj_key =>$value) {
+		// $obj_key = field_dm_...
+		if(!db_table_exists('field_data_'.$obj_key)){
+			if ($obj_key == 'field_dm_email') {
+				$field = array(
+					'field_name' => $obj_key,
+					'type' => 'email',
+					'label' => t($value['label'])
+				);
+				field_create_field($field);
+			} elseif ($obj_key == 'field_dm_cv') {
+				$field = array(
+					'field_name' => $obj_key,
+					'type' => 'file',
+					'label' => t($value['label'])
+				);
+				field_create_field($field);
+			} else {
+				$field = array(
+					'field_name' => $obj_key,
+					'type' => 'text',
+					'label' => t($value['label'])
+				);
+				field_create_field($field);
+			}
+		}
+		if ($obj_key == 'field_dm_education') {
+			$field_name = 'field_dm_education';
+			$field = field_info_field($field_name);
+
+			$field['cardinality'] = -1;  // Change to number you want
+
+			// field_update_field() throws an exception on failure
+			try { field_update_field($field); }
+			catch (Exception $e) { drupal_set_message(t('Could not update dm_education field.'), 'error'); }
+		}
+		if ($obj_key == 'field_dm_interests') {
+			$field_name = 'field_dm_interests';
+			$field = field_info_field($field_name);
+
+			$field['cardinality'] = -1;  // Change to number you want
+
+			// field_update_field() throws an exception on failure
+			try { field_update_field($field); }
+			catch (Exception $e) { drupal_set_message(t('Could not update dm_interests field.'), 'error'); }
+		}
+		// If it's a CV then tell it to only use PDF files, else treat everything as a text field
+		if ($obj_key == 'field_dm_cv') {
+			$instance = array(
+				'field_name' => $obj_key,
+				'entity_type' => 'taxonomy_term',
+				'bundle' => 'faculty',
+				'label' => t($value['label']),
+				'description' => t($value['description']),
+				'required' => false,
+				'settings' => array('file_extensions' => 'pdf')
+			);
+		} else {
+			$instance = array(
+				'field_name' => $obj_key,
+				'entity_type' => 'taxonomy_term',
+				'bundle' => 'faculty',
+				'label' => t($value['label']),
+				'description' => t($value['description']),
+				'required' => false,
+				'widget' => array(
+					'type' => 'text_textfield',
+					'settings'=> array(
+						'max_width'=>255,
+					)
+				),
+			);
+		}
+		field_create_instance($instance);
+	}
+
+	// Create Department field instance and add it to our Faculty taxonomy
+	$instance = array(
+		'field_name' => 'field_department',
+		'entity_type' => 'taxonomy_term',
+		'bundle' => 'faculty',
+		'label' => 'Department',
+		'description' => 'Faculty Department Name',
+		'required' => false,
+		'widget' => array(
+			'type' => 'options_select',
+			'weight' => -10,
+		)
+	);
+	field_create_instance($instance);
+
+	// create publication content type
+	node_types_rebuild();
+	$types = node_type_get_types();
+	node_add_body_field($types['faculty_publication']);
+	variable_set('pathauto_node_faculty_publication_pattern', 'faculty-research/publications/[node:title]');
+
+	// Creates Term Reference field -> Faculty for Faculty Publication content type
+	if(!db_table_exists('field_data_field_dm_pub_auth_tag')){
+		$field = array(
+			'field_name' => 'field_dm_pub_auth_tag',
+			'type' => 'taxonomy_term_reference',
+			'label' => t('Faculty members from Taxonomy Faculty'),
+			//'cardinality' => -1,
+			'settings' => array(
+				'allowed_values' => array(
+					array(
+						'vocabulary' => 'faculty',
+						'parent' => 0
+					),
+				),
+			)
+		);
+		field_create_field($field);
+	}
+
+	// Creates Authors field collection
+	$fields_array = array(
+		array(
+			'field' => array(
+				'field_name' => 'field_dm_pub_auth',
+				'label' => t('Publication Authors'),
+				'cardinality' => -1,
+				'type' => 'field_collection',
+			),
+			'instance' => array(
+				'field_name' => 'field_dm_pub_auth',
+				'entity_type' => 'node',
+				'bundle' => 'faculty_publication',
+				'label' => t('Publication Authors'),
+				'description' => '',
+				'widget' => array('type' => 'field_collection_embed'),
+				'required' => 1,
+			),
+		)
+	);
+	// Loop through fields array and create field and instance
+	foreach ($fields_array as $field) {
+		// Check if field already exists
+		if (!field_info_field($field['field']['field_name'])) { field_create_field($field['field']); }
+
+		// Check if instance exists
+		if (!field_info_instance($field['instance']['entity_type'], $field['instance']['field_name'], $field['instance']['bundle'])) { field_create_instance($field['instance']); }
+	}
+
+	/*
+		Define the Publication fields
+
+		Digital Measures ID							-- number_integer		field_dm_pub_id
+		Contribution Type							-- text					field_dm_pub_type
+		-- Current Status
+		-- AASCB Contribution Category				-- text
+		Title of Contribution						-- text
+		Authors										-- Field Collection		field_dm_pub_auth
+			First Name								-- text					field_dm_pub_auth_fname
+			Middle Name								-- text					field_dm_pub_auth_mname
+			Last Name								-- text					field_dm_pub_auth_lname
+			Institution/Company						-- text					field_dm_pub_auth_company
+			Web Profile Order						-- number_integer		field_dm_pub_auth_rank
+			Tagged Faculty Member					-- Term Reference		field_dm_pub_auth_tag
+		Journal/Publisher/Proceedings Publisher		-- text					field_dm_pub_publisher
+		Volume										-- text					field_dm_pub_volume
+		Issue										-- text					field_dm_pub_issue
+		Page Number									-- text					field_dm_pub_pagenum
+		Date Published
+			Year									-- number_integer		field_dm_pub_year
+
+	*/
+
+	$pub_fields = array(
+		'field_dm_pub_id' => array(
+			'label'=>'Digital Measures ID',
+			'description'=>''),
+		'field_dm_pub_type' => array(
+			'label'=>'Type of Publication',
+			'description'=>'Journal, Article, Book, Chapter, etc.'),
+		'field_dm_pub_auth_fname' => array(
+			'label'=>'Author First Name',
+			'description'=>''),
+		'field_dm_pub_auth_mname' => array(
+			'label'=>'Author Middle Name',
+			'description'=>''),
+		'field_dm_pub_auth_lname' => array(
+			'label'=>'Author Last Name',
+			'description'=>''),
+		'field_dm_pub_auth_company' => array(
+			'label'=>'Author Institution/Company',
+			'description'=>''),
+		'field_dm_pub_auth_rank' => array(
+			'label'=>'Author Web Rank',
+			'description'=>''),
+		'field_dm_pub_publisher' => array(
+			'label'=>'Publisher',
+			'description' =>'University of Kentucky Press, etc.'),
+		'field_dm_pub_volume' => array(
+			'label'=>'Volume',
+			'description'=>''),
+		'field_dm_pub_issue' => array(
+			'label'=>'Issue',
+			'description'=>''),
+		'field_dm_pub_pagenum' => array(
+			'label'=>'Page Number',
+			'description'=>''),
+		'field_dm_pub_year' => array(
+			'label'=>'Year Published',
+			'description'=>''),
+	);
+
+	// Creates the Fields
+	foreach ($pub_fields as $obj_key =>$value) {
+		// $obj_key = field_dm_...
+		if(!db_table_exists('field_data_'.$obj_key)){
+			if (($obj_key == 'field_dm_pub_auth_rank') || ($obj_key == 'field_dm_pub_year')) {
+				$field = array(
+					'field_name' => $obj_key,
+					'type' => 'number_integer',
+					'label' => t($value['label'])
+				);
+				field_create_field($field);
+			} else {
+				$field = array(
+					'field_name' => $obj_key,
+					'type' => 'text',
+					'label' => t($value['label'])
+				);
+				field_create_field($field);
+			}
+		}
+
+		if (($obj_key == 'field_dm_pub_auth_fname') || ($obj_key == 'field_dm_pub_auth_mname') || ($obj_key == 'field_dm_pub_auth_lname') || ($obj_key == 'field_dm_pub_auth_company') || ($obj_key == 'field_dm_pub_auth_rank')) {
+			$instance = array(
+				'field_name' => $obj_key,
+				'entity_type' => 'field_collection_item',
+				'bundle' => 'field_dm_pub_auth',
+				'label' => t($value['label']),
+				'description' => t($value['description']),
+				'required' => false,
+				/*'widget' => array(
+					'type' => 'text_textfield',
+					'settings'=> array(
+						'max_width'=>255,
+					)
+				),*/
+			);
+			field_create_instance($instance);
+		} else {
+			// Creates instance of the fields
+			$instance = array(
+				'field_name' => $obj_key,
+				'entity_type' => 'node',
+				'bundle' => 'faculty_publication',
+				'label' => t($value['label']),
+				'description' => t($value['description']),
+				'required' => false,
+				/*'widget' => array(
+					'type' => 'text_textfield',
+					'settings'=> array(
+						'max_width'=>255,
+					)
+				),*/
+			);
+			field_create_instance($instance);
+		}
+	}
+
+	// Creates instance of term reference to our faculty members
+	// What this does is allow you to tag a faculty member to thier publication
+	$instance = array(
+		'field_name' => 'field_dm_pub_auth_tag',
+		'entity_type' => 'field_collection_item',
+		'label' => t('Faculty Member'),
+		'bundle' => 'field_dm_pub_auth',
+		'description' => t('Faculty members from Taxonomy Faculty'),
+		'widget' => array(
+			'type' => 'options_select'
+		)
+	);
+	field_create_instance($instance);
+}
+
+/**
+ * Implements hook_uninstall().
+ *
+ * 		Notice: Trying to get property of non-object in comment_node_type_delete()
+ *		(line 344 of /Users/Matt/Sites/nursing/modules/comment/comment.module).
+ *		Notice: Trying to get property of non-object in comment_node_type_delete()
+ *		(line 355 of /Users/Matt/Sites/nursing/modules/comment/comment.module).
+ */
+function digitalmeasures_uky_uninstall() {
+	// For DIB server - Override php timeout of 30sec
+	// Should probably set this to something more realistic so the code can't run forever
+	set_time_limit(0);
+
+	// Remove Faculty Publications
+	$ournewtype = 'faculty_publication';
+	$sql = 'SELECT nid FROM {node} n WHERE n.type = :type';
+	$result = db_query($sql, array(':type' => $ournewtype));
+	$nodeids = array();
+	foreach ($result as $row) {
+		$nodeids[] = $row->nid;
+	}
+	node_delete_multiple($nodeids);
+	node_type_delete($ournewtype);
+
+	$vocab = taxonomy_vocabulary_machine_name_load('faculty');
+	taxonomy_vocabulary_delete($vocab->vid);
+	/*$vocab = taxonomy_vocabulary_machine_name_load('department');
+	taxonomy_vocabulary_delete($vocab->vid);*/
+}

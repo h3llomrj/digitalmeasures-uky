@@ -1,0 +1,990 @@
+<?php
+
+/*
+ ********************************************************
+ ***                                                  ***
+ ***  Created by Matt Johnson -- matt.johnson@uky.edu ***
+ ***                                                  ***
+ ********************************************************
+
+ -TODO-
+ * Make thie college independent
+ * Create a config page, seperate tabs or pages with each DM section and all the available fields
+ * Figure out how to delete all the alias' of the publication content type when deleting the nodes
+ * Have the _getFaculty function run from cron nightly
+ * Make faculty stop bitching about having to use dm
+ * Have Jim create a field for faculty to attach their CVs and add a cv link field into dm so it's not a manual process on my end
+
+ */
+
+
+/**
+ * Implements hook_menu().
+ */
+function digitalmeasures_uky_menu() {
+  $items['admin/config/services/digitalmeasures-uky'] = array(
+	'title' => 'UKY Digital Measures',
+	'access arguments' => array('administer uky digital measures'),
+	'page callback' => 'drupal_get_form',
+	'page arguments' => array('digitalmeasures_uky_admin_config_form'),
+	'file' => 'digitalmeasures_uky.admin.inc',
+  );
+
+  return $items;
+}
+
+
+/**
+ * Implements hook_permission().
+ */
+function digitalmeasures_uky_permission() {
+	return array(
+		'administer uky digital measures' =>  array(
+			'title' => t('Administer UKY Digital Measures'),
+			'description' => t('Perform administration tasks for the UKY Digital Measures module.'),
+		),
+	);
+}
+
+
+/**
+ * Implements hook_node_info()
+ */
+
+function digitalmeasures_uky_node_info() {
+	return array(
+		'faculty_publication' => array(
+			'name' => t('Faculty Publication'),
+			'base' => 'faculty_publication',
+			'description' => t('Add Faculty publications.'),
+			'has_title' => TRUE,
+			'title_label' => t('Title'),
+			'locked' => TRUE
+		)
+	);
+}
+
+
+/**
+ * Implement hook_form()
+ */
+function faculty_publication_form($node, $form_state) {
+	return node_content_form($node, $form_state);
+}
+
+
+// Gets list of USERS from Digital Measures
+function dmFacultyList() {
+	//$userType = 'COLLEGE:Nursing';
+	$userType = 'USER_ENABLED:ENABLED';
+	$users = digitalmeasures_digitalmeasures_entry_keys_from_index($userType, 'php');
+	return $users;
+}
+
+
+// Get's vocabulary ID for Faculty
+function getVid() {
+	$voc = taxonomy_vocabulary_machine_name_load('faculty');
+	$vid = $voc->vid;
+	return $vid;
+}
+
+
+function digitalmeasures_uky_getFaculty() {
+	// For DIB server - Override php timeout of 30sec
+	// Should probably set this to something more realistic so the code can't run forever
+	//set_time_limit(0);
+	ini_set('max_execution_time', 500);
+
+	$ukyUsers = dmFacultyList();
+	$vid = getVid();
+
+	$start = microtime(true);
+
+    // Delete all Faculty Publication nodes.
+    // QUESTION: Should I do this or update the existing nodes?
+    $node_types = array('faculty_publication'); // add the machine names of node types you want to bulk delete
+    $nids = db_select('node', 'n')
+        ->fields('n', array('nid'))
+        ->condition('type', $node_types)
+        ->execute()
+        ->fetchCol();
+    node_delete_multiple($nids);
+
+	foreach ($ukyUsers['USERNAME'] as $k => &$v) {
+
+		// Load department by machine name since we know that
+		$department = taxonomy_vocabulary_machine_name_load('department');
+
+		//$user = 'USERNAME:'.$v.'/ADMIN_PERM';
+		$user = 'USERNAME:'.$v.'/PCI,ADMIN,ADMIN_PERM,EDUCATION,INTELLCONT'; // Removed ,INTEXP,PRESENT -> for awards & presentations
+		$facInfo = digitalmeasures_digitalmeasures_get_schemadata($user, 'php');
+		$termName = $facInfo['Record']['@attributes']['username'];
+		print '<h1>Working on '.$termName.'</h1>';
+		$term = taxonomy_get_term_by_name($termName, 'faculty');
+
+		if (empty($facInfo['Record']['ADMIN_PERM']['DTY_SEPARATION'])) {
+			// If they don't have any Seperation data entered into DTY_SEPARATION (year of seperation) then we can import them
+			// This also imports them if ADMIN_PERM is NULL too
+			//$user = 'USERNAME:'.$v.'/PCI,EDUCATION,INTEXP,AWARDHONOR,INTELLCONT,PRESENT';
+			//$user = 'USERNAME:'.$v.'/PCI,ADMIN,ADMIN_PERM,EDUCATION,INTEXP,INTELLCONT,PRESENT';
+			//$facInfo = digitalmeasures_digitalmeasures_get_schemadata($user, 'php');
+
+			$facEDU = '';
+			$facADMIN = '';
+			$facPUB = '';
+			$facPCI = $facInfo['Record']['PCI'];
+			if (!empty($facInfo['Record']['EDUCATION'])) { $facEDU = $facInfo['Record']['EDUCATION']; }
+			if (!empty($facInfo['Record']['ADMIN'])) { $facADMIN = $facInfo['Record']['ADMIN']; }
+			if (!empty($facInfo['Record']['INTELLCONT'])) { $facPUB = $facInfo['Record']['INTELLCONT']; }
+			unset($facInfo);
+			$eduSize = count($facEDU);
+
+      // FFFFUUUUCCCCKKKK
+			/*if ((module_exists('devel_debug_log')) && ($termName == 'RJA233')) {
+				ddl($facPCI);
+			}*/
+
+			// If term name matches already created term then update, else create a new one.
+			if ($term != NULL) {
+				// Get the first array key
+				reset($term);
+				$first_key = key($term);
+				$facTID = $term[$first_key]->tid;
+
+				// Update Faculty info from array
+				if (!empty($facPCI['BIO'])) { $term[$first_key]->description = $facPCI['BIO']; }
+				if (!empty($facPCI['PREFIX'])) { $term[$first_key]->field_dm_prefix[LANGUAGE_NONE]['0']['value'] = $facPCI['PREFIX']; }
+				if (!empty($facPCI['FNAME'])) { $term[$first_key]->field_dm_fname[LANGUAGE_NONE]['0']['value'] = $facPCI['FNAME']; }
+				// If they have a perfered name, use that instead of first name
+				if (!empty($facPCI['PFNAME'])) { $term[$first_key]->field_dm_pfname[LANGUAGE_NONE]['0']['value'] = $facPCI['PFNAME']; }
+				if (!empty($facPCI['LNAME'])) { $term[$first_key]->field_dm_lname[LANGUAGE_NONE]['0']['value'] = $facPCI['LNAME']; }
+				if (!empty($facPCI['EMAIL'])) { $term[$first_key]->field_dm_email[LANGUAGE_NONE]['0']['email'] = $facPCI['EMAIL']; }
+				if (!empty($facPCI['CREDABBR'])) { $term[$first_key]->field_dm_credabbr[LANGUAGE_NONE]['0']['value'] = $facPCI['CREDABBR']; }
+
+				if (!empty($facPCI['PTITLES'])) {
+					$term[$first_key]->field_dm_ptitles[LANGUAGE_NONE]['0']['value'] = substr($facPCI['PTITLES'], 0, 254);
+				}
+
+				if (!empty($facPCI['OPHONE1']) && !empty($facPCI['OPHONE2']) && !empty($facPCI['OPHONE3'])) {
+					$term[$first_key]->field_dm_phone[LANGUAGE_NONE]['0']['value'] = '('. $facPCI['OPHONE1'] . ') ' . $facPCI['OPHONE2'] . '-' . $facPCI['OPHONE3'];
+				}
+				if (!empty($facPCI['WEBSITE']['WEBSITE'])) { $term[$first_key]->field_dm_website[LANGUAGE_NONE]['0']['value'] = $facPCI['WEBSITE']['WEBSITE']; }
+				if (!empty($facPCI['PREF_UK_ADDR1'])) { $term[$first_key]->field_dm_pref_uk_addr1[LANGUAGE_NONE]['0']['value'] = $facPCI['PREF_UK_ADDR1']; }
+
+				unset($facPCI);
+				if (!empty($facEDU)) {
+					if (!empty($facEDU['DEG'])) {
+						if (!empty($facEDU['DEG'])) { $degree = $facEDU['DEG']; } else { $degree = ''; }
+						if (!empty($facEDU['SCHOOL'])) { $school = $facEDU['SCHOOL']; } else { $school = ''; }
+						if (!empty($facEDU['YR_COMP'])) { $year = $facEDU['YR_COMP']; } else { $year = ''; }
+						$term[$first_key]->field_dm_education[LANGUAGE_NONE][0]['value'] = $degree.', '.$school.', '.$year;
+					} else {
+						for ($m = 0 ; $m < $eduSize; $m++) {
+							if (!empty($facEDU[$m]['DEG'])) { $degree = $facEDU[$m]['DEG']; } else { $degree = ''; }
+							if (!empty($facEDU[$m]['SCHOOL'])) { $school = $facEDU[$m]['SCHOOL']; } else { $school = ''; }
+							if (!empty($facEDU[$m]['YR_COMP'])) { $year = $facEDU[$m]['YR_COMP']; } else { $year = ''; }
+							$term[$first_key]->field_dm_education[LANGUAGE_NONE][$m]['value'] = $degree.', '.$school.', '.$year;
+						}
+					}
+				}
+				unset($facEDU);
+				if (!empty($facADMIN)) {
+					if (!empty($facADMIN['0']['ADMIN_DEP']['DEP'])) {
+
+						// Load departments taxonomy tree with vid from above
+						$departmentTree = taxonomy_get_tree($department->vid);
+						$departmentSave = false;
+
+						// If Department name matches a term name, save it
+						foreach ($departmentTree as $k2 => &$v2) {
+							if ($facADMIN['0']['ADMIN_DEP']['DEP'] == $v2->name) {
+								$term[$first_key]->field_department[LANGUAGE_NONE]['0']['tid'] = $v2->tid;
+								$departmentSave = true;
+								break;
+							}
+						}
+						if (!$departmentSave) {
+							$termDept = new stdClass();
+							$termDept->name = $facADMIN['0']['ADMIN_DEP']['DEP'];
+							$termDept->vid = $department->vid;
+							taxonomy_term_save($termDept);
+						}
+          // If it's a faculty member's first year, it's not an array
+					} elseif (!empty($facADMIN['ADMIN_DEP']['DEP'])) {
+            // Load departments taxonomy tree with vid from above
+						$departmentTree = taxonomy_get_tree($department->vid);
+						$departmentSave = false;
+
+						// If Department name matches a term name, save it
+						foreach ($departmentTree as $k2 => &$v2) {
+							if ($facADMIN['ADMIN_DEP']['DEP'] == $v2->name) {
+								$term[$first_key]->field_department[LANGUAGE_NONE]['0']['tid'] = $v2->tid;
+								$departmentSave = true;
+								break;
+							}
+						}
+						if (!$departmentSave) {
+							$termDept = new stdClass();
+							$termDept->name = $facADMIN['ADMIN_DEP']['DEP'];
+							$termDept->vid = $department->vid;
+							taxonomy_term_save($termDept);
+            }
+          }
+				}
+				unset($facADMIN);
+				taxonomy_term_save($term[$first_key]);
+				digitalmeasures_uky_create_publication_node($facPUB, $facTID);
+				unset($facPUB);
+				print '<p>Finished the publications.</p>';
+				print '<h3>Updated ' . $termName . '!</h3>';
+
+			} else {
+				// Create New Faculty member
+				$term = new stdClass();
+				$term->name = $termName;
+				$term->vid = $vid;
+				if (!empty($facPCI['BIO'])) { $term->description = $facPCI['BIO']; }
+				if (!empty($facPCI['PREFIX'])) { $term->field_dm_prefix[LANGUAGE_NONE]['0']['value'] = $facPCI['PREFIX']; }
+				if (!empty($facPCI['FNAME'])) { $term->field_dm_fname[LANGUAGE_NONE]['0']['value'] = $facPCI['FNAME']; }
+				// If they have a perfered name, use that instead of first name
+				if (!empty($facPCI['PFNAME'])) { $term->field_dm_pfname[LANGUAGE_NONE]['0']['value'] = $facPCI['PFNAME']; }
+				if (!empty($facPCI['LNAME'])) { $term->field_dm_lname[LANGUAGE_NONE]['0']['value'] = $facPCI['LNAME']; }
+				if (!empty($facPCI['EMAIL'])) { $term->field_dm_email[LANGUAGE_NONE]['0']['email'] = $facPCI['EMAIL']; }
+				if (!empty($facPCI['CREDABBR'])) { $term->field_dm_credabbr[LANGUAGE_NONE]['0']['value'] = $facPCI['CREDABBR']; }
+				if (!empty($facPCI['PTITLES'])) {
+					$term->field_dm_ptitles[LANGUAGE_NONE]['0']['value'] = substr($facPCI['PTITLES'], 0, 254);
+				}
+				if (!empty($facPCI['OPHONE1']) && !empty($facPCI['OPHONE2']) && !empty($facPCI['OPHONE3'])) {
+					$term->field_dm_phone[LANGUAGE_NONE]['0']['value'] = '('. $facPCI['OPHONE1'] . ') ' . $facPCI['OPHONE2'] . '-' . $facPCI['OPHONE3'];
+				}
+				if (!empty($facPCI['WEBSITE']['WEBSITE'])) { $term->field_dm_website[LANGUAGE_NONE]['0']['value'] = $facPCI['WEBSITE']['WEBSITE']; }
+
+				if (!empty($facPCI['PREF_UK_ADDR1'])) { $term->field_dm_pref_uk_addr1[LANGUAGE_NONE]['0']['value'] = $facPCI['PREF_UK_ADDR1']; }
+
+				unset($facPCI);
+				if (!empty($facEDU)) {
+					if (!empty($facEDU['DEG'])) {
+						if (!empty($facEDU['DEG'])) { $degree = $facEDU['DEG']; } else { $degree = ''; }
+						if (!empty($facEDU['SCHOOL'])) { $school = $facEDU['SCHOOL']; } else { $school = ''; }
+						if (!empty($facEDU['YR_COMP'])) { $year = $facEDU['YR_COMP']; } else { $year = ''; }
+						$term->field_dm_education[LANGUAGE_NONE][0]['value'] = $degree.', '.$school.', '.$year;
+					} else {
+						for ($m = 0 ; $m < $eduSize; $m++) {
+							if (!empty($facEDU[$m]['DEG'])) { $degree = $facEDU[$m]['DEG']; } else { $degree = ''; }
+							if (!empty($facEDU[$m]['SCHOOL'])) { $school = $facEDU[$m]['SCHOOL']; } else { $school = ''; }
+							if (!empty($facEDU[$m]['YR_COMP'])) { $year = $facEDU[$m]['YR_COMP']; } else { $year = ''; }
+							$term->field_dm_education[LANGUAGE_NONE][$m]['value'] = $degree.', '.$school.', '.$year;
+						}
+					}
+				}
+				unset($facEDU);
+				if (!empty($facADMIN)) {
+					if (!empty($facADMIN['0']['ADMIN_DEP']['DEP'])) {
+
+						// Load departments taxonomy tree with vid from above
+						$departmentTree = taxonomy_get_tree($department->vid);
+						$departmentSave = false;
+
+						// If Department name matches a term name, save it
+						foreach ($departmentTree as $k2 => &$v2) {
+							if ($facADMIN['0']['ADMIN_DEP']['DEP'] == $v2->name) {
+								$term->field_department[LANGUAGE_NONE]['0']['tid'] = $v2->tid;
+								$departmentSave = true;
+							}
+						}
+						if (!$departmentSave) {
+							$termDept = new stdClass();
+							$termDept->name = $facADMIN['0']['ADMIN_DEP']['DEP'];
+							$termDept->vid = $department->vid;
+							taxonomy_term_save($termDept);
+						}
+          // If it's a faculty member's first year, it's not an array
+					} elseif (!empty($facADMIN['ADMIN_DEP']['DEP'])) {
+            // Load departments taxonomy tree with vid from above
+						$departmentTree = taxonomy_get_tree($department->vid);
+						$departmentSave = false;
+
+						// If Department name matches a term name, save it
+						foreach ($departmentTree as $k2 => &$v2) {
+							if ($facADMIN['ADMIN_DEP']['DEP'] == $v2->name) {
+								$term[$first_key]->field_department[LANGUAGE_NONE]['0']['tid'] = $v2->tid;
+								$departmentSave = true;
+								break;
+							}
+						}
+						if (!$departmentSave) {
+							$termDept = new stdClass();
+							$termDept->name = $facADMIN['ADMIN_DEP']['DEP'];
+							$termDept->vid = $department->vid;
+							taxonomy_term_save($termDept);
+            }
+          }
+				}
+				unset($facADMIN);
+				taxonomy_term_save($term);
+				$facTID = $term->tid;
+				digitalmeasures_uky_create_publication_node($facPUB, $facTID);
+				unset($facPUB);
+				print '<p>Finished the publications.</p>';
+				print '<h3>Created ' . $termName . '	!</h3>';
+			}
+		} else {
+			// Get the faculty's term information if there.
+
+			if ($term != NULL) {
+				// Find the TID of the term
+				reset($term);
+				$first_key = key($term);
+				$facTID = $term[$first_key]->tid;
+				taxonomy_term_delete($facTID);
+				print '<p>Deleted: '.$termName.'</p>';
+			} else {
+				// Term wasn't found which means we probably already deleted them.
+				print '<p>Skipped: '.$termName.'!</p>';
+			}
+		}
+		unset($facInfo);
+	}
+	echo "Completed in ", microtime(true) - $start, " Seconds\n";
+}
+
+
+/*
+*	***********************************************************
+*	Create NODE based on Faculty Paper
+*	***********************************************************
+*/
+function digitalmeasures_uky_create_publication_node($facPUB, $facTID) {
+	$pubSize = count($facPUB);
+	//$pubSize = 1;
+
+	// Loop through the Faculty members publications
+	for ($l = 0; $l < $pubSize; $l++) {
+		// Check to see if the Node already exists by checking to see if
+		// field_dm_pub_id matches the publication ID in the array
+		$query = new EntityFieldQuery();
+		if (!empty($facPUB[$l]['@attributes']['id'])) {
+			$entities = $query->entityCondition('entity_type', 'node')
+				->propertyCondition('type', 'faculty_publication')
+				->fieldCondition('field_dm_pub_id', 'value', $facPUB[$l]['@attributes']['id'])
+				->propertyCondition('status', 1)
+				->range(0,1)
+				->execute();
+
+		} elseif (!empty($facPUB['@attributes']['id'])) {
+			$entities = $query->entityCondition('entity_type', 'node')
+				->propertyCondition('type', 'faculty_publication')
+				->fieldCondition('field_dm_pub_id', 'value', $facPUB['@attributes']['id'])
+				->propertyCondition('status', 1)
+				->range(0,1)
+				->execute();
+
+		}
+
+		$saveMe = false;
+
+		/********
+
+			TODO:
+				*** VERY IMPORTANT - Author Information is an array!!
+				1. Check to see if the publication has a ranking.
+					$facPUB[$l]['INTELLCONT_AUTH']['PROFILE_ORDER']
+
+				2. If it does import the publication info along with it's ranking
+					$node->field_dm_pub_rank[LANGUAGE_NONE][$l]['value'] = $facPUB[$l]['INTELLCONT_AUTH']['PROFILE_ORDER'];
+
+				3. If it doesn't, skip it!
+
+		********/
+
+		// A pub ID matched a field so we load that node for updating
+		if (!empty($entities['node'])) {
+
+			$node = node_load(current(array_keys($entities['node'])));
+            //$node = entity_metadata_wrapper('node', $node);
+
+            $authCount = count($node->field_dm_pub_auth[LANGUAGE_NONE]);
+            for ($g = 0; $g < $authCount; $g++) {
+                if ((!empty($facPUB[$l]['STATUS'])) && (!empty($facPUB[$l]['TITLE'])) && (!empty($facPUB[$l]['INTELLCONT_AUTH']['PROFILE_ORDER']))) {
+                    if ($facPUB[$l]['STATUS'] == 'Published') {
+                        $eid = $node->field_dm_pub_auth[LANGUAGE_NONE][$g]['value'];
+                        $fieldtest = entity_load('field_collection_item', array($eid));
+                        $term = taxonomy_term_load($facTID);
+                        //ddl('--- Non Array Author ---');
+                        foreach ($fieldtest as &$value) {
+                            if (!empty($facPUB[$l]['INTELLCONT_AUTH']['FNAME'])){ $value->field_dm_pub_auth_fname[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['INTELLCONT_AUTH']['FNAME'];}
+                            if (!empty($facPUB[$l]['INTELLCONT_AUTH']['MNAME'])){ $value->field_dm_pub_auth_mname[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['INTELLCONT_AUTH']['MNAME'];}
+                            if (!empty($facPUB[$l]['INTELLCONT_AUTH']['LNAME'])){ $value->field_dm_pub_auth_lname[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['INTELLCONT_AUTH']['LNAME'];}
+                            if (!empty($facPUB[$l]['INTELLCONT_AUTH']['INSTITUTION'])){ $value->field_dm_pub_auth_company[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['INTELLCONT_AUTH']['INSTITUTION'];}
+                            $value->field_dm_pub_auth_rank[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['INTELLCONT_AUTH']['PROFILE_ORDER'];
+                            if ((!empty($facPUB[$l]['INTELLCONT_AUTH']['FACULTY_NAME'])) && ($term->field_dm_fname[LANGUAGE_NONE][0]['value'] == $value->field_dm_pub_auth_fname[LANGUAGE_NONE][0]['value']) && ($term->field_dm_lname[LANGUAGE_NONE][0]['value'] == $value->field_dm_pub_auth_lname[LANGUAGE_NONE][0]['value'])) {
+                                $value->field_dm_pub_auth_tag[LANGUAGE_NONE][0]['tid'] = $facTID;
+                            } elseif (empty($facPUB[$l]['INTELLCONT_AUTH']['FACULTY_NAME'])) {
+                                $value->field_dm_pub_auth_tag[LANGUAGE_NONE][0]['tid'] = NULL;
+                            }
+                        }
+                        $fieldtest[$eid]->save();
+                        //field_attach_update('node', $node);
+                        //entity_save('field_collection_item', $fieldtest);
+                        //node_save($node);
+                    }
+                } elseif ((!empty($facPUB[$l]['STATUS'])) && (!empty($facPUB[$l]['TITLE'])) && (!empty($facPUB[$l]['INTELLCONT_AUTH'][$g]['PROFILE_ORDER']))) {
+                    if ($facPUB[$l]['STATUS'] == 'Published') {
+                        $eid = $node->field_dm_pub_auth[LANGUAGE_NONE][$g]['value'];
+                        $fieldtest = entity_load('field_collection_item', array($eid));
+                        //$fieldtest->setHostEntity('node', $node);
+                        $term = taxonomy_term_load($facTID);
+                        //ddl('--- Array Author ---');
+                        foreach ($fieldtest as &$value) {
+                            if (!empty($facPUB[$l]['INTELLCONT_AUTH'][$g]['FNAME'])){ $value->field_dm_pub_auth_fname[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['INTELLCONT_AUTH'][$g]['FNAME']; }
+                            if (!empty($facPUB[$l]['INTELLCONT_AUTH'][$g]['MNAME'])){ $value->field_dm_pub_auth_mname[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['INTELLCONT_AUTH'][$g]['MNAME']; }
+                            if (!empty($facPUB[$l]['INTELLCONT_AUTH'][$g]['LNAME'])){ $value->field_dm_pub_auth_lname[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['INTELLCONT_AUTH'][$g]['LNAME']; }
+                            if (!empty($facPUB[$l]['INTELLCONT_AUTH'][$g]['INSTITUTION'])){ $value->field_dm_pub_auth_company[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['INTELLCONT_AUTH'][$g]['INSTITUTION']; }
+                            $value->field_dm_pub_auth_rank[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['INTELLCONT_AUTH'][$g]['PROFILE_ORDER'];
+                            if ((!empty($facPUB[$l]['INTELLCONT_AUTH'][$g]['FACULTY_NAME'])) && ($term->field_dm_fname[LANGUAGE_NONE][0]['value'] == $value->field_dm_pub_auth_fname[LANGUAGE_NONE][0]['value']) && ($term->field_dm_lname[LANGUAGE_NONE][0]['value'] == $value->field_dm_pub_auth_lname[LANGUAGE_NONE][0]['value'])) {
+                                $value->field_dm_pub_auth_tag[LANGUAGE_NONE][0]['tid'] = $facTID;
+                            } elseif (empty($facPUB[$l]['INTELLCONT_AUTH'][$g]['FACULTY_NAME'])) {
+                                $value->field_dm_pub_auth_tag[LANGUAGE_NONE][0]['tid'] = NULL;
+                            }
+                        }
+                        $fieldtest[$eid]->save();
+                        //field_attach_update('node', $node);
+                        //entity_save('field_collection_item', $fieldtest);
+                        //node_save($node);
+                    }
+                }
+            }
+
+            /*
+			// Only add Published papers to the website, delete the ones that aren't
+			if ((!empty($facPUB[$l]['STATUS'])) && (!empty($facPUB[$l]['TITLE']))) {
+				if ($facPUB[$l]['STATUS'] == 'Published') {
+					if (!empty($facPUB[$l]['CONTYPE'])) {
+						$node->field_dm_pub_type[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['CONTYPE'];
+					}
+					if (!empty($facPUB[$l]['ABSTRACT'])) {
+						$node->body[$node->language][0]['value'] = $facPUB[$l]['ABSTRACT'];
+					} else {
+						$node->body[$node->language][0]['value'] = ' ';
+					}
+					$node->field_dm_pub_rank[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['INTELLCONT_AUTH'][0]['PROFILE_ORDER'];
+					// Save the node
+					node_save($node);
+				} else {
+					// Delete the Node
+					node_delete($node->nid);
+				}
+			} else {
+				// Delete the Node
+				node_delete($node->nid);
+			}*/
+
+        // The ID wasn't matched so let's create a new node
+		} else {
+			if ((!empty($facPUB[$l]['STATUS'])) && (!empty($facPUB[$l]['TITLE']))) {
+				if ($facPUB[$l]['STATUS'] == 'Published') {
+					$node = new stdClass();					// Create a new node object
+					$node->type = 'faculty_publication';	// Content type
+					$node->language = LANGUAGE_NONE;		// Or e.g. 'en' if locale is enabled
+					node_object_prepare($node);				// Set some default values
+					$node->status = 1;						// (1 or 0): published or unpublished
+					$node->promote = 0;						// (1 or 0): promoted to front page or not
+					$node->sticky = 0;						// (1 or 0): sticky at top of lists or not
+					$node->comment = 0;						// 2 = comments open, 1 = comments closed, 0 = comments hidden
+					$node->uid = 1;							// Add author of the node
+
+					if (!empty($facPUB[$l]['ABSTRACT'])) {
+						$node->body[$node->language][0]['value'] = $facPUB[$l]['ABSTRACT'];
+					} else {
+						$node->body[$node->language][0]['value'] = ' ';
+					}
+					$node->title = substr($facPUB[$l]['TITLE'], 0, 254);
+
+					if (!empty($facPUB[$l]['DTY_PUB'])) { $node->field_dm_pub_year[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['DTY_PUB']; }
+					if (!empty($facPUB[$l]['PUBLISHER'])) { $node->field_dm_pub_publisher[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['PUBLISHER']; }
+					if (!empty($facPUB[$l]['VOLUME'])) { $node->field_dm_pub_volume[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['VOLUME']; }
+					if (!empty($facPUB[$l]['ISSUE'])) { $node->field_dm_pub_issue[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['ISSUE']; }
+					if (!empty($facPUB[$l]['PAGENUM'])) { $node->field_dm_pub_pagenum[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['PAGENUM']; }
+					$node->field_dm_pub_id[LANGUAGE_NONE][0]['value'] = $facPUB[$l]['@attributes']['id'];
+
+					$authCount = count($facPUB[$l]['INTELLCONT_AUTH']);
+					if (!empty($facPUB[$l]['INTELLCONT_AUTH']['FNAME'])) {
+
+                        $lname='';
+                        $mname='';
+                        $fname='';
+                        $company='';
+                        $facCheck = false;
+                        $rank=NULL;
+                        if (!empty($facPUB[$l]['INTELLCONT_AUTH']['FNAME'])) {
+                            $fname = $facPUB[$l]['INTELLCONT_AUTH']['FNAME'];
+                        }
+                        if (!empty($facPUB[$l]['INTELLCONT_AUTH']['MNAME'])) {
+                            $mname = $facPUB[$l]['INTELLCONT_AUTH']['MNAME'];
+                        }
+                        if (!empty($facPUB[$l]['INTELLCONT_AUTH']['LNAME'])) {
+                            $lname = $facPUB[$l]['INTELLCONT_AUTH']['LNAME'];
+                        }
+                        if (!empty($facPUB[$l]['INTELLCONT_AUTH']['INSTITUTION'])) {
+                            $company = $facPUB[$l]['INTELLCONT_AUTH']['INSTITUTION'];
+                        }
+                        if (!empty($facPUB[$l]['INTELLCONT_AUTH']['FACULTY_NAME'])) {
+                            $facCheck = true;
+                        }
+                        if (!empty($facPUB[$l]['INTELLCONT_AUTH']['PROFILE_ORDER'])) {
+                            $ranking = $facPUB[$l]['INTELLCONT_AUTH']['PROFILE_ORDER'];
+                            $rank = intval($ranking);
+                            $saveMe = true;
+                        }
+                        if ($facCheck) {
+                            $values = array(
+                                'field_name' => 'field_dm_pub_auth',
+                                'field_dm_pub_auth_fname' => array(
+                                    LANGUAGE_NONE => array(array('value' => $fname)),
+                                ),
+                                'field_dm_pub_auth_mname' => array(
+                                    LANGUAGE_NONE => array(array('value' => $mname)),
+                                ),
+                                'field_dm_pub_auth_lname' => array(
+                                    LANGUAGE_NONE => array(array('value' => $lname)),
+                                ),
+                                'field_dm_pub_auth_company' => array(
+                                    LANGUAGE_NONE => array(array('value' => $company)),
+                                ),
+                                'field_dm_pub_auth_rank' => array(
+                                    LANGUAGE_NONE => array(array('value' => $rank)),
+                                ),
+                                'field_dm_pub_auth_tag' => array(
+                                    LANGUAGE_NONE => array(array('tid' => $facTID)),
+                                ),
+                            );
+                        } else {
+                            $values = array(
+                                'field_name' => 'field_dm_pub_auth',
+                                'field_dm_pub_auth_fname' => array(
+                                    LANGUAGE_NONE => array(array('value' => $fname)),
+                                ),
+                                'field_dm_pub_auth_mname' => array(
+                                    LANGUAGE_NONE => array(array('value' => $mname)),
+                                ),
+                                'field_dm_pub_auth_lname' => array(
+                                    LANGUAGE_NONE => array(array('value' => $lname)),
+                                ),
+                                'field_dm_pub_auth_company' => array(
+                                    LANGUAGE_NONE => array(array('value' => $company)),
+                                ),
+                                'field_dm_pub_auth_rank' => array(
+                                    LANGUAGE_NONE => array(array('value' => $rank)),
+                                ),
+                                'field_dm_pub_auth_tag' => array(
+                                    LANGUAGE_NONE => array(array('tid' => NULL)),
+                                ),
+                            );
+                        }
+                        $entity = entity_create('field_collection_item', $values);
+                        $entity->setHostEntity('node', $node);
+					} else {
+						for ($g = 0; $g < $authCount; $g++) {
+                            $lname='';
+    						$mname='';
+    						$fname='';
+                            $company='';
+                            $facCheck = false;
+                            $rank=NULL;
+    						if (!empty($facPUB[$l]['INTELLCONT_AUTH'][$g]['FNAME'])) {
+    							$fname = $facPUB[$l]['INTELLCONT_AUTH'][$g]['FNAME'];
+    						}
+    						if (!empty($facPUB[$l]['INTELLCONT_AUTH'][$g]['MNAME'])) {
+    							$mname = $facPUB[$l]['INTELLCONT_AUTH'][$g]['MNAME'];
+    						}
+    						if (!empty($facPUB[$l]['INTELLCONT_AUTH'][$g]['LNAME'])) {
+    							$lname = $facPUB[$l]['INTELLCONT_AUTH'][$g]['LNAME'];
+    						}
+                            if (!empty($facPUB[$l]['INTELLCONT_AUTH'][$g]['INSTITUTION'])) {
+    							$company = $facPUB[$l]['INTELLCONT_AUTH'][$g]['INSTITUTION'];
+    						}
+                            if (!empty($facPUB[$l]['INTELLCONT_AUTH'][$g]['FACULTY_NAME'])) {
+    							$facCheck = true;
+    						}
+    						if (!empty($facPUB[$l]['INTELLCONT_AUTH'][$g]['PROFILE_ORDER'])) {
+    							$ranking = $facPUB[$l]['INTELLCONT_AUTH'][$g]['PROFILE_ORDER'];
+                                $rank = intval($ranking);
+    							$saveMe = true;
+    						}
+                            if ($facCheck) {
+                                $values = array(
+                                    'field_name' => 'field_dm_pub_auth',
+                                    'field_dm_pub_auth_fname' => array(
+                                        LANGUAGE_NONE => array(array('value' => $fname)),
+                                    ),
+                                    'field_dm_pub_auth_mname' => array(
+                                        LANGUAGE_NONE => array(array('value' => $mname)),
+                                    ),
+                                    'field_dm_pub_auth_lname' => array(
+                                        LANGUAGE_NONE => array(array('value' => $lname)),
+                                    ),
+                                    'field_dm_pub_auth_company' => array(
+                                        LANGUAGE_NONE => array(array('value' => $company)),
+                                    ),
+                                    'field_dm_pub_auth_rank' => array(
+                                        LANGUAGE_NONE => array(array('value' => $rank)),
+                                    ),
+                                    'field_dm_pub_auth_tag' => array(
+                                        LANGUAGE_NONE => array(array('tid' => $facTID)),
+                                    ),
+                                );
+                            } else {
+                                $values = array(
+                                    'field_name' => 'field_dm_pub_auth',
+                                    'field_dm_pub_auth_fname' => array(
+                                        LANGUAGE_NONE => array(array('value' => $fname)),
+                                    ),
+                                    'field_dm_pub_auth_mname' => array(
+                                        LANGUAGE_NONE => array(array('value' => $mname)),
+                                    ),
+                                    'field_dm_pub_auth_lname' => array(
+                                        LANGUAGE_NONE => array(array('value' => $lname)),
+                                    ),
+                                    'field_dm_pub_auth_company' => array(
+                                        LANGUAGE_NONE => array(array('value' => $company)),
+                                    ),
+                                    'field_dm_pub_auth_rank' => array(
+                                        LANGUAGE_NONE => array(array('value' => $rank)),
+                                    ),
+                                    'field_dm_pub_auth_tag' => array(
+                                        LANGUAGE_NONE => array(array('tid' => NULL)),
+                                    ),
+                                );
+                            }
+                            $entity = entity_create('field_collection_item', $values);
+                            $entity->setHostEntity('node', $node);
+						}
+					}
+                    //do_dump($node);
+					if ($saveMe) {
+						// Save the node
+                        //ddl($values);
+						node_save($node);
+					}
+				}
+			} elseif ((!empty($facPUB['STATUS'])) && (!empty($facPUB['TITLE']))) {
+				if ($facPUB['STATUS'] == 'Published') {
+					$node = new stdClass();					// Create a new node object
+					$node->type = 'faculty_publication';	// Content type
+					$node->language = LANGUAGE_NONE;		// Or e.g. 'en' if locale is enabled
+					node_object_prepare($node);				// Set some default values
+					$node->status = 1;						// (1 or 0): published or unpublished
+					$node->promote = 0;						// (1 or 0): promoted to front page or not
+					$node->sticky = 0;						// (1 or 0): sticky at top of lists or not
+					$node->comment = 0;						// 2 = comments open, 1 = comments closed, 0 = comments hidden
+					$node->uid = 1;							// Add author of the node
+
+					if (!empty($facPUB['ABSTRACT'])) {
+						$node->body[$node->language][0]['value'] = $facPUB['ABSTRACT'];
+					} else {
+						$node->body[$node->language][0]['value'] = ' ';
+					}
+
+					$node->title = substr($facPUB['TITLE'], 0, 254);
+
+                    if (!empty($facPUB['CONTYPE'])) { $node->field_dm_pub_type[LANGUAGE_NONE][0]['value'] = $facPUB['CONTYPE']; }
+					if (!empty($facPUB['DTY_PUB'])) { $node->field_dm_pub_year[LANGUAGE_NONE][0]['value'] = $facPUB['DTY_PUB']; }
+					if (!empty($facPUB['PUBLISHER'])) { $node->field_dm_pub_publisher[LANGUAGE_NONE][0]['value'] = $facPUB['PUBLISHER']; }
+					if (!empty($facPUB['VOLUME'])) { $node->field_dm_pub_volume[LANGUAGE_NONE][0]['value'] = $facPUB['VOLUME']; }
+					if (!empty($facPUB['ISSUE'])) { $node->field_dm_pub_issue[LANGUAGE_NONE][0]['value'] = $facPUB['ISSUE']; }
+					if (!empty($facPUB['PAGENUM'])) { $node->field_dm_pub_pagenum[LANGUAGE_NONE][0]['value'] = $facPUB['PAGENUM']; }
+					$node->field_dm_pub_id[LANGUAGE_NONE][0]['value'] = $facPUB['@attributes']['id'];
+
+                    /*$values = array(
+                        'field_name' => 'field_dm_pub_auth',
+                        'field_dm_pub_auth_fname' => array(
+                            LANGUAGE_NONE => array(array('value' => 'Test F')),
+                        ),
+                        'field_dm_pub_auth_mname' => array(
+                            LANGUAGE_NONE => array(array('value' => 'Test M')),
+                        ),
+                        'field_dm_pub_auth_lname' => array(
+                            LANGUAGE_NONE => array(array('uid' => 'Test L')),
+                        ),
+                    );
+                    $entity = entity_create('field_collection_item', $values);
+                    $entity->setHostEntity('node', $node);*/
+
+					$authCount = count($facPUB['INTELLCONT_AUTH']);
+
+                    if (!empty($facPUB['INTELLCONT_AUTH']['FNAME'])) {
+
+                        $lname='';
+						$mname='';
+						$fname='';
+                        $company='';
+                        $rank=NULL;
+						if (!empty($facPUB['INTELLCONT_AUTH']['FNAME'])) {
+							$fname = $facPUB['INTELLCONT_AUTH']['FNAME'];
+						}
+						if (!empty($facPUB['INTELLCONT_AUTH']['MNAME'])) {
+							$mname = $facPUB['INTELLCONT_AUTH']['MNAME'];
+						}
+						if (!empty($facPUB['INTELLCONT_AUTH']['LNAME'])) {
+							$lname = $facPUB['INTELLCONT_AUTH']['LNAME'];
+						}
+                        if (!empty($facPUB['INTELLCONT_AUTH']['INSTITUTION'])) {
+							$company = $facPUB['INTELLCONT_AUTH']['INSTITUTION'];
+						}
+						if (!empty($facPUB['INTELLCONT_AUTH']['PROFILE_ORDER'])) {
+							$rank = $facPUB['INTELLCONT_AUTH']['PROFILE_ORDER'];
+							$saveMe = true;
+						}
+                        $values = array(
+                            'field_name' => 'field_dm_pub_auth',
+                            'field_dm_pub_auth_fname' => array(
+                                LANGUAGE_NONE => array(array('value' => $fname)),
+                            ),
+                            'field_dm_pub_auth_mname' => array(
+                                LANGUAGE_NONE => array(array('value' => $mname)),
+                            ),
+                            'field_dm_pub_auth_lname' => array(
+                                LANGUAGE_NONE => array(array('value' => $lname)),
+                            ),
+                            'field_dm_pub_auth_company' => array(
+                                LANGUAGE_NONE => array(array('value' => $company)),
+                            ),
+                            'field_dm_pub_auth_rank' => array(
+                                LANGUAGE_NONE => array(array('value' => $rank)),
+                            ),
+                            'field_dm_pub_auth_tag' => array(
+                                LANGUAGE_NONE => array(array('tid' => $facTID)),
+                            ),
+                        );
+                        if (empty($facPUB['INTELLCONT_AUTH']['FACULTY_NAME'])) {
+                            $values->field_dm_pub_auth_tag['und'][0]['tid'] = NULL;
+                        }
+                        $entity = entity_create('field_collection_item', $values);
+                        $entity->setHostEntity('node', $node);
+					} else {
+						for ($g = 0; $g < $authCount; $g++) {
+                            $lname='';
+    						$mname='';
+    						$fname='';
+                            $company='';
+                            $rank=NULL;
+    						if (!empty($facPUB['INTELLCONT_AUTH'][$g]['FNAME'])) {
+    							$fname = $facPUB['INTELLCONT_AUTH'][$g]['FNAME'];
+    						}
+    						if (!empty($facPUB['INTELLCONT_AUTH'][$g]['MNAME'])) {
+    							$mname = $facPUB['INTELLCONT_AUTH'][$g]['MNAME'];
+    						}
+    						if (!empty($facPUB['INTELLCONT_AUTH'][$g]['LNAME'])) {
+    							$lname = $facPUB['INTELLCONT_AUTH'][$g]['LNAME'];
+    						}
+                            if (!empty($facPUB['INTELLCONT_AUTH'][$g]['INSTITUTION'])) {
+    							$company = $facPUB['INTELLCONT_AUTH'][$g]['INSTITUTION'];
+    						}
+    						if (!empty($facPUB['INTELLCONT_AUTH'][$g]['PROFILE_ORDER'])) {
+    							$rank = $facPUB['INTELLCONT_AUTH'][$g]['PROFILE_ORDER'];
+    							$saveMe = true;
+    						}
+                            $values = array(
+                                'field_name' => 'field_dm_pub_auth',
+                                'field_dm_pub_auth_fname' => array(
+                                    LANGUAGE_NONE => array(array('value' => $fname)),
+                                ),
+                                'field_dm_pub_auth_mname' => array(
+                                    LANGUAGE_NONE => array(array('value' => $mname)),
+                                ),
+                                'field_dm_pub_auth_lname' => array(
+                                    LANGUAGE_NONE => array(array('value' => $lname)),
+                                ),
+                                'field_dm_pub_auth_company' => array(
+                                    LANGUAGE_NONE => array(array('value' => $company)),
+                                ),
+                                'field_dm_pub_auth_rank' => array(
+                                    LANGUAGE_NONE => array(array('value' => $rank)),
+                                ),
+                                'field_dm_pub_auth_tag' => array(
+                                    LANGUAGE_NONE => array(array('tid' => $facTID)),
+                                ),
+                            );
+                            if (empty($facPUB['INTELLCONT_AUTH'][$g]['FACULTY_NAME'])) {
+                                $values->field_dm_pub_auth_tag[LANGUAGE_NONE][0]['tid'] = NULL;
+                            }
+                            $entity = entity_create('field_collection_item', $values);
+                            $entity->setHostEntity('node', $node);
+						}
+					}
+
+					if ($saveMe) {
+						// Save the node
+                        //ddl($values);
+						node_save($node);
+					}
+				}
+			}
+		}
+	}
+}
+
+function digitalmeasures_uky_node_delete($node){
+    // Delete alias.
+    $path = path_load(
+        array('source' => 'node/'.$node->nid)
+    );
+    path_delete($path['pid']);
+}
+
+// This function sorts through a view with a field collection.
+// Field collections are a pain in the ass.
+// Runs after the DB has been queried
+// Running before I couldn't target my filter and sort
+function digitalmeasures_uky_views_post_execute(&$view) {
+    if ($view->name == 'publications') {
+        $cont = false;
+        $tid = $view->args[0];
+        $nid_results = array();
+        $new_result = array();
+
+        // Loop through each result and remove any nodes that don't have a rank for the current TID
+        // then remove the nodes that have already been processed.
+        // The view returns multiple nodes because of the field_collection
+        // Fucking field collections
+        foreach ($view->result as $i => &$result) {
+            foreach ($result->field_field_dm_pub_auth as $author) {
+                $tidCheck = 0;
+                $cont = false;
+                $eid = $author['raw']['value'];
+                $rank = $author['rendered']['entity']['field_collection_item'][$eid]['field_dm_pub_auth_rank']['#items'][0]['value'];
+                $rank = intval($rank);
+                if (!empty($author['rendered']['entity']['field_collection_item'][$eid]['field_dm_pub_auth_tag'])) {
+                    $tidCheck = $author['rendered']['entity']['field_collection_item'][$eid]['field_dm_pub_auth_tag']['#items'][0]['tid'];
+                }
+                if (($tid == $tidCheck) && ($rank != 0)) {
+                    $cont = true;
+                    break;
+                }
+            }
+            if ($cont) {
+                if (!in_array($result->nid, $nid_results)) {
+                    array_push($nid_results,$result->nid);
+                } else {
+                    // Remove from the array
+                    unset($view->result[$i]);
+                }
+            } else {
+                unset($view->result[$i]);
+            }
+        }
+
+        if (module_exists('devel_debug_log')) {
+            //ddl($view->result);
+        }
+
+        $rank = null;
+        $ranking2 = array();
+        // Sort by field_dm_pub_auth_rank
+        // $i is our array key for $view->result which we need to save so we know what results to keep
+        foreach ($view->result as $i => &$result) {
+            foreach ($result->field_field_dm_pub_auth as $author) {
+                $tidCheck = 0;
+                $cont = false;
+                // Get the field_collection ID
+                $eid = $author['raw']['value'];
+				if (!empty($author['rendered']['entity']['field_collection_item'][$eid]['field_dm_pub_auth_rank']['#items'][0]['value'])) {
+	                $rank = $author['rendered']['entity']['field_collection_item'][$eid]['field_dm_pub_auth_rank']['#items'][0]['value'];
+	                $rank = intval($rank);
+	                if (!empty($author['rendered']['entity']['field_collection_item'][$eid]['field_dm_pub_auth_tag'])) {
+	                    $tidCheck = $author['rendered']['entity']['field_collection_item'][$eid]['field_dm_pub_auth_tag']['#items'][0]['tid'];
+	                }
+	                $ranking = array($rank => $i);
+	                // If the term ID matches the term in the view we continue on and break out
+	                if ($tid == $tidCheck) {
+	                    $cont = true;
+	                    $ranking2 = $ranking + $ranking2;
+	                    break;
+	                }
+				}
+            }
+        }
+        if (module_exists('devel_debug_log')) {
+            //ddl($ranking2);
+        }
+        // Sort by the key, high to low
+        krsort($ranking2);
+        if (module_exists('devel_debug_log')) {
+            //ddl($ranking2);
+        }
+
+        $rank_count = count($ranking2);
+        $i=0;
+
+        // Add the results to our new array
+        while ($i <= $rank_count) {
+            if (!is_null($view->result[$ranking2[$i]])) {
+                $new_result = array_merge($new_result,array($i => $view->result[$ranking2[$i]]));
+                $rank_count++;
+            }
+            $i++;
+        }
+        //unset($view->result);
+        $view->result = $new_result;
+        if (module_exists('devel_debug_log')) {
+            //ddl($view->result);
+        }
+	}
+}
+
+
+/**********************
+***********************
+
+**	HELPER FUNCTIONS **
+
+***********************
+**********************/
+
+//	Recursive in_array function
+//	Checks a multi-array for your search term ($needle)
+function in_array_r($needle, $haystack, $strict = false) {
+	foreach ($haystack as $item) {
+		if (($strict ? $item === $needle : $item == $needle) || (is_array($item) && in_array_r($needle, $item, $strict))) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// Converts line breaks to <p> tags
+function nl2p($string, $line_breaks = true, $xml = true) {
+	$string = str_replace(array('<p>', '</p>', '<br>', '<br />'), '', $string);
+	// It is conceivable that people might still want single line-breaks
+	// without breaking into a new paragraph.
+	if ($line_breaks == true) {
+		return '<p>'.preg_replace(
+			array("/([\n]{2,})/i", "/([^>])\n([^<])/i"),
+			array("</p>\n<p>", '$1<br'.($xml == true ? ' /' : '').'>$2'),
+			trim($string)).'</p>';
+	} else {
+		return '<p>'.preg_replace(
+			array("/([\n]{2,})/i", "/([\r\n]{3,})/i","/([^>])\n([^<])/i"),
+			array("</p>\n<p>", "</p>\n<p>", '$1<br'.($xml == true ? ' /' : '').'>$2'),
+			trim($string)).'</p>';
+	}
+}
+
+function in_multiarray($elem, $array) {
+	$top = sizeof($array) - 1;
+	$bottom = 0;
+	while($bottom <= $top) {
+		if ($array[$bottom] == $elem) {
+			return true;
+		} else {
+			if(is_array($array[$bottom])) {
+				if (in_multiarray($elem, ($array[$bottom]))) {
+					return true;
+				}
+			}
+		}
+		$bottom++;
+	}
+	return false;
+}

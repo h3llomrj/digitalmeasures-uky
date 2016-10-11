@@ -1,0 +1,12 @@
+name = Digital Measures UKY
+description = Imports UK's Digital Measures Faculty Information
+package = Digital Measures
+core = 7.x
+version = 7.x-1.1-dev
+dependencies[] = digitalmeasures
+dependencies[] = field_collection
+
+configure = admin/config/services/digitalmeasures-uky
+
+files[] = digitalmeasures_uky.install
+files[] = digitalmeasures_uky.module
